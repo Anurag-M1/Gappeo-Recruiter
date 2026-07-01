@@ -323,7 +323,7 @@ Grok Cloud offers OpenAI-compatible HTTP endpoints. The `gpt-oss-120b` model sup
 ## 14. Screenshots Placeholders
 
 - **Login**: `[login_screenshot_placeholder]`
-- **Dashboard**: `[dashboard_screenshot_placeholder]`
+- **Dashboard**: `[<img width="1470" height="830" alt="Screenshot 2026-07-01 at 3 19 37 PM" src="https://github.com/user-attachments/assets/bb9f175d-7f86-4e7c-adb1-b5c0d8f70113" />]`
 - **Jobs Board**: `[jobs_screenshot_placeholder]`
 - **Candidates Board**: `[candidates_screenshot_placeholder]`
 - **Upload Details**: `[upload_screenshot_placeholder]`
