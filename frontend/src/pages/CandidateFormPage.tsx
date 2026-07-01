@@ -5,6 +5,14 @@ import { candidateService } from '../services/candidateService';
 import { jobService } from '../services/jobService';
 import { aiService } from '../services/ai';
 
+type FileStatus = 'pending' | 'uploading' | 'parsing' | 'success' | 'error';
+interface FileUploadState {
+  file: File;
+  status: FileStatus;
+  progress: number;
+  error?: string;
+}
+
 interface Props {
   mode: 'create' | 'edit';
 }
@@ -19,10 +27,9 @@ export default function CandidateFormPage({ mode }: Props) {
   // Dropdown options
   const [jobs, setJobs] = useState<Job[]>([]);
 
-  // Direct Resume Upload State
-  const [directFile, setDirectFile] = useState<File | null>(null);
-  const [directProgress, setDirectProgress] = useState<number | null>(null);
-  const [directState, setDirectState] = useState<'idle' | 'uploading' | 'parsing'>('idle');
+  // Direct Bulk Resume Upload State
+  const [uploadFiles, setUploadFiles] = useState<FileUploadState[]>([]);
+  const [isBulkUploading, setIsBulkUploading] = useState(false);
 
   // Form fields
   const [jobId, setJobId] = useState('');
@@ -41,28 +48,69 @@ export default function CandidateFormPage({ mode }: Props) {
       setError('Please select an associated job posting first.');
       return;
     }
-    if (!directFile) {
-      setError('Please select a resume file first.');
+    if (uploadFiles.length === 0) {
+      setError('Please select at least one resume file.');
       return;
     }
 
     setError('');
-    setDirectProgress(0);
-    setDirectState('uploading');
+    setIsBulkUploading(true);
 
-    try {
-      await aiService.uploadDirect(jobId, directFile, (progress) => {
-        setDirectProgress(progress);
-        if (progress >= 100) {
-          setDirectState('parsing');
-        }
-      });
-      navigate('/candidates');
-    } catch (err: unknown) {
-      setDirectState('idle');
-      setDirectProgress(null);
-      setError(err instanceof Error ? err.message : 'Direct resume parsing failed.');
+    let hasError = false;
+
+    for (let i = 0; i < uploadFiles.length; i++) {
+      const fileState = uploadFiles[i];
+      if (fileState.status === 'success') continue;
+
+      setUploadFiles(prev => prev.map((f, idx) => 
+        idx === i ? { ...f, status: 'uploading', progress: 0, error: undefined } : f
+      ));
+
+      try {
+        await aiService.uploadDirect(jobId, fileState.file, (progress) => {
+          setUploadFiles(prev => prev.map((f, idx) => {
+            if (idx === i) {
+               return { ...f, progress, status: progress >= 100 ? 'parsing' : 'uploading' };
+            }
+            return f;
+          }));
+        });
+        
+        setUploadFiles(prev => prev.map((f, idx) => 
+          idx === i ? { ...f, status: 'success', progress: 100 } : f
+        ));
+      } catch (err: unknown) {
+        hasError = true;
+        setUploadFiles(prev => prev.map((f, idx) => 
+          idx === i ? { ...f, status: 'error', error: err instanceof Error ? err.message : 'Failed' } : f
+        ));
+      }
     }
+
+    setIsBulkUploading(false);
+    
+    if (!hasError) {
+      navigate('/candidates');
+    } else {
+      setError('Some files failed to upload. Please check the list below.');
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const newFiles = Array.from(e.target.files).map(file => ({
+        file,
+        status: 'pending' as FileStatus,
+        progress: 0
+      }));
+      setUploadFiles(prev => [...prev, ...newFiles]);
+      // Reset the input value so the same file or additional files can be selected sequentially without issues
+      e.target.value = '';
+    }
+  };
+  
+  const removeUploadFile = (index: number) => {
+    setUploadFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   useEffect(() => {
@@ -147,19 +195,20 @@ export default function CandidateFormPage({ mode }: Props) {
       {mode === 'create' && (
         <div className="detail-card" style={{ marginBottom: '2rem', border: '2px dashed var(--color-accent-light)', padding: '1.5rem', background: '#f8fafc' }}>
           <h2 style={{ fontSize: '1.15rem', color: 'var(--color-accent)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            ⚡ 1-Click Resume Upload & AI Auto-Fill
+            ⚡ Bulk Resume Upload & AI Auto-Fill
           </h2>
           <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
-            Skip the manual form! Select a job, drop a resume, and our AI will automatically parse details, create the candidate, and generate a fit score.
+            Skip the manual form! Select a job, drop multiple resumes, and our AI will automatically parse details, create candidates, and generate fit scores.
           </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', alignItems: 'end' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', alignItems: 'end', marginBottom: '1rem' }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label htmlFor="direct-job">1. Select Job Opening *</label>
               <select 
                 id="direct-job" 
                 value={jobId} 
                 onChange={e => setJobId(e.target.value)} 
+                disabled={isBulkUploading}
                 style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}
               >
                 <option value="">-- Select Job Posting --</option>
@@ -170,12 +219,14 @@ export default function CandidateFormPage({ mode }: Props) {
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
-              <label htmlFor="direct-file">2. Choose Resume (PDF / DOCX) *</label>
+              <label htmlFor="direct-file">2. Choose Resumes (PDF / DOCX) *</label>
               <input 
                 id="direct-file" 
                 type="file" 
-                accept=".pdf,.docx" 
-                onChange={e => setDirectFile(e.target.files?.[0] || null)}
+                multiple={true}
+                accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" 
+                onChange={handleFileChange}
+                disabled={isBulkUploading}
                 style={{ width: '100%', padding: '0.4rem', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}
               />
             </div>
@@ -184,25 +235,59 @@ export default function CandidateFormPage({ mode }: Props) {
               <button 
                 type="button" 
                 className="btn btn-primary btn-full" 
-                disabled={!jobId || !directFile || directState !== 'idle'} 
+                disabled={!jobId || uploadFiles.length === 0 || isBulkUploading} 
                 onClick={handleDirectUpload}
                 style={{ height: '2.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', justifyContent: 'center' }}
               >
-                {directState === 'idle' && 'Upload & Parse'}
-                {directState === 'uploading' && `Uploading (${directProgress}%)`}
-                {directState === 'parsing' && 'AI Parsing & Scoring...'}
+                {isBulkUploading ? 'Processing...' : `Upload & Parse ${uploadFiles.length} file(s)`}
               </button>
             </div>
           </div>
 
-          {directProgress !== null && (
-            <div style={{ marginTop: '1.25rem' }}>
-              <div style={{ height: '8px', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${directProgress}%`, background: 'var(--color-accent)', transition: 'width 0.2s' }}></div>
-              </div>
-              <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', display: 'block', marginTop: '0.25rem' }}>
-                {directState === 'uploading' ? 'Uploading resume to secure server...' : 'AI is reading, parsing details, and running fit evaluation scorecard...'}
-              </span>
+          {uploadFiles.length > 0 && (
+            <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <h4 style={{ fontSize: '0.875rem', margin: 0 }}>Selected Files:</h4>
+              {uploadFiles.map((fileState, idx) => (
+                <div key={idx} style={{ 
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
+                  padding: '0.75rem', background: '#fff', border: '1px solid var(--color-border)', 
+                  borderRadius: 'var(--radius-sm)'
+                }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.25rem', overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.875rem', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {fileState.file.name}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 
+                        fileState.status === 'success' ? 'var(--color-success)' : 
+                        fileState.status === 'error' ? 'var(--color-error)' : 
+                        'var(--color-accent)' 
+                      }}>
+                        {fileState.status === 'pending' && 'Pending'}
+                        {fileState.status === 'uploading' && `Uploading ${fileState.progress}%`}
+                        {fileState.status === 'parsing' && 'AI Parsing...'}
+                        {fileState.status === 'success' && '✅ Success'}
+                        {fileState.status === 'error' && '❌ Failed'}
+                      </span>
+                    </div>
+                    {(fileState.status === 'uploading' || fileState.status === 'parsing') && (
+                      <div style={{ height: '4px', background: '#e2e8f0', borderRadius: '2px', overflow: 'hidden', marginTop: '0.25rem' }}>
+                         <div style={{ height: '100%', width: `${fileState.progress}%`, background: 'var(--color-accent)', transition: 'width 0.2s' }}></div>
+                      </div>
+                    )}
+                    {fileState.error && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-error)' }}>{fileState.error}</span>
+                    )}
+                  </div>
+                  {fileState.status !== 'success' && !isBulkUploading && (
+                    <button 
+                      onClick={() => removeUploadFile(idx)} 
+                      style={{ marginLeft: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-secondary)', fontSize: '1.25rem' }}
+                      title="Remove file"
+                    >×</button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
